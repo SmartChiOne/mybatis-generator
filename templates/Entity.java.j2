@@ -1,0 +1,22 @@
+package {{ entityPackage }};
+{% set className = table|big_camel_case %}
+import lombok.Data;
+import java.util.Date;
+import javax.persistence.GeneratedValue;
+import javax.persistence.Id;
+
+/**
+ * {{ table }} 实体类
+ */
+@Data
+public class {{ className }} {
+
+    {% for col in columns %}
+    /**
+    * {{ col.comment or col.name }}
+    */{% if col.name | lower == 'id' %}
+    @Id
+    @GeneratedValue(generator = "JDBC"){% endif %}
+    private {{ col.type|map_java_type }} {{ col.name|camel_case }};
+    {% endfor %}
+}

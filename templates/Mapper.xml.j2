@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE  mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="{{ daoPackage }}.{{ table|big_camel_case }}Mapper">
+    <resultMap id="BaseResultMap" type="{{ entityPackage }}.{{ table|big_camel_case }}">{% for col in columns %}
+        <result column="{{ col.name }}" property="{{ col.name|camel_case }}"/>{% endfor %}
+    </resultMap>
+    <sql id="baseColumns">
+        {{ columns | map(attribute='name') | join(', ')  }}
+    </sql>
+
+</mapper>

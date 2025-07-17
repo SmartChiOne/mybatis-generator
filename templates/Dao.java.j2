@@ -1,0 +1,9 @@
+package {{ daoPackage }};
+
+import {{ entityPackage }}.{{ table|big_camel_case }};
+import org.apache.ibatis.annotations.Mapper;
+import tk.mybatis.mapper.common.BaseMapper;
+
+@Mapper
+public interface {{ table|big_camel_case }}Mapper extends BaseMapper<{{ table|big_camel_case }}>{
+}
