@@ -304,7 +304,6 @@ class App(tk.Tk):
         super().__init__()
         self.title("MyBatis代码生成器")
 
-        # --- 新增: 窗口缩放配置 ---
         # 设置窗口的最小尺寸，防止缩得太小导致控件错乱
         self.minsize(450, 600)
         # 配置主窗口的网格权重
@@ -312,7 +311,6 @@ class App(tk.Tk):
         self.grid_columnconfigure(1, weight=1)
         # 第1行（包含表选择区域）权重设为1，使其可以垂直拉伸
         self.grid_rowconfigure(1, weight=1)
-        # --- 新增结束 ---
 
         self.file_path = file_path
         self.config_list = Configuration.load_from_file(file_path)
@@ -330,7 +328,7 @@ class App(tk.Tk):
         db_config_frame.grid(row=row_index, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
         row_index += 1
 
-        # 修改: 为容器配置列权重，让输入框列可以拉伸
+        # 为容器配置列权重，让输入框列可以拉伸
         db_config_frame.grid_columnconfigure(1, weight=1)
 
         ttk.Label(db_config_frame, text="选择配置:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
@@ -392,7 +390,7 @@ class App(tk.Tk):
         list_frame = ttk.Frame(table_frame)
         list_frame.grid(row=1, column=0, sticky="nsew")
 
-        # --- 新增: 配置 list_frame 内部的网格权重 ---
+        # 配置 list_frame 内部的网格权重 ---
         list_frame.grid_rowconfigure(0, weight=1)
         list_frame.grid_columnconfigure(0, weight=1)
 
