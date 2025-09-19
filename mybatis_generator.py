@@ -1,9 +1,13 @@
+from enum import Enum
 import os
 import json
 import re
 import shutil
 import sys
+from dataclasses import dataclass, field
+from dataclasses_json import dataclass_json
 from pathlib import Path
+from typing import Optional
 
 import pymysql
 from jinja2 import Environment, FileSystemLoader
@@ -15,16 +19,20 @@ import zipfile
 DEFAULT_TYPE_MAP = {
     "INT": "Integer",
     "BIGINT": "Long",
+    "CHAR": "String",
     "VARCHAR": "String",
+    "DATE": "Date",
+    "TIME": "Date",
     "DATETIME": "Date",
     "TIMESTAMP": "Date",
     "DECIMAL": "BigDecimal",
+    "FLOAT": "Float",
     "DOUBLE": "Double",
     "TINYINT(1)": "Boolean",
     "TEXT": "String"
 }
 
-config_cache_path = "~/simple_mybatis_generator/config.json"
+config_cache_path = "./simple_mybatis_generator/config.json"
 
 
 def zip_folder(folder_path, output_zip):
@@ -75,11 +83,112 @@ if getattr(sys, 'frozen', False):
 else:
     base_dir = os.path.dirname(__file__)
 
+
+class OutputMode(Enum):
+    package = 1
+    write_into_path = 2
+
+
+@dataclass
+@dataclass_json
+class DbConfig:
+    host: Optional[str] = None
+    port: Optional[int] = None
+    user: Optional[str] = None
+    password: Optional[str] = None
+    database: Optional[str] = None
+
+    @staticmethod
+    def default_db():
+        res = DbConfig()
+        res.host = 'localhost'
+        res.port = 3306
+        res.user = 'root'
+        res.password = '123456'
+        res.database = 'test'
+        return res
+
+
+@dataclass
+@dataclass_json
+class GenerateConfig:
+    type_map: Optional[dict] = field(default=dict)
+    entity_package: Optional[str] = None
+    dao_package: Optional[str] = None
+    xml_path: Optional[str] = None
+
+
+@dataclass
+@dataclass_json
+class Configuration:
+    name: Optional[str] = None
+    db: Optional[DbConfig] = None
+    # 输出模式；1：压缩包，2：直接写入指定目录
+    output_mode: Optional[int] = None
+    output_path: Optional[str] = None
+    generate_config: Optional[GenerateConfig] = None
+
+    @staticmethod
+    def default_config():
+        cfg = Configuration()
+        cfg.name = "默认"
+        cfg.db = DbConfig.default_db()
+        cfg.generate_config = GenerateConfig()
+        cfg.generate_config.type_map = DEFAULT_TYPE_MAP
+        cfg.generate_config.xml_path = 'resource/mappers'
+        cfg.output_mode = OutputMode.package.name
+        return cfg
+
+    @staticmethod
+    def empty_config():
+        cfg = Configuration()
+        cfg.name = ""
+        cfg.db = DbConfig()
+        cfg.generate_config = GenerateConfig()
+        cfg.generate_config.type_map = DEFAULT_TYPE_MAP
+        cfg.generate_config.xml_path = 'resource/mappers'
+        cfg.output_mode = OutputMode.package.name
+        return cfg
+
+    @staticmethod
+    def load_from_file(file_path) -> []:
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    js_config = json.load(f)
+                    result = []
+                    for item in js_config:
+                        config_obj = Configuration()
+                        config_obj.name = item.get('name')
+                        config_obj.output_mode = item.get('output_mode')
+
+                        db_js = item.get('db')
+                        config_obj.db = DbConfig()
+                        db = config_obj.db
+                        db.host = db_js.get('host')
+                        db.port = int(db_js.get('port')) or 3306
+                        db.user = db_js.get('user')
+                        db.password = db_js.get('password')
+                        db.database = db_js.get('database')
+
+                        generate_config_js = item.get('generate_config')
+                        config_obj.generate_config = GenerateConfig()
+                        generate_config = config_obj.generate_config
+                        generate_config.type_map = generate_config_js.get('type_map')
+                        generate_config.entity_package = generate_config_js.get('entity_package')
+                        generate_config.dao_package = generate_config_js.get('dao_package')
+                        generate_config.xml_path = generate_config_js.get('xml_path')
+                        result.append(config_obj)
+                return result
+        except Exception as e:
+            print(f"file_path load failed {e}")
+        return [Configuration.default_config()]
+
+
 class CodeGenerator:
-    def __init__(self):
-        self.config_file = config_cache_path
-        self.config = self.load_config()
-        self.type_map = DEFAULT_TYPE_MAP
+    def __init__(self, config: Configuration):
+        self.config = config
+        self.type_map = self.config.generate_config.type_map
         # 初始化模板工具
         self.jinja_env = Environment(loader=FileSystemLoader(os.path.join(base_dir, "templates")))
         # 自定义驼峰工具
@@ -89,32 +198,23 @@ class CodeGenerator:
         # mysql data_type转javaType工具
         self.jinja_env.filters['map_java_type'] = self.map_java_type
 
-    def load_config(self):
-        try:
-            with open(self.config_file, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {"db_config": {}, "output_path": "", "type_map": DEFAULT_TYPE_MAP}
-
-    def save_config(self):
-        config_path = Path(self.config_file).expanduser()
-        if not os.path.exists(config_path):
-            config_path.parent.mkdir()
-            config_path.touch()
-        with open(config_path, 'w') as f:
-            json.dump(self.config, f, indent=4)
-
     def connect_db(self, host, port, user, password, database):
         try:
             conn = pymysql.connect(
                 host=host, port=int(port), user=user,
                 password=password, database=database, charset='utf8mb4'
             )
-            self.config["db_config"] = {"host": host, "port": port, "user": user, "password": password,
-                                        "database": database}
+            self._refresh_db_config(host, port, user, password, database)
             return conn
         except Exception as e:
             raise Exception(f"数据库连接失败: {e}")
+
+    def _refresh_db_config(self, host, port, user, password, database):
+        self.config.db.host = host
+        self.config.db.port = int(port)
+        self.config.db.user = user
+        self.config.db.password = password
+        self.config.db.database = database
 
     def get_tables(self, conn):
         with conn.cursor() as cursor:
@@ -136,38 +236,45 @@ class CodeGenerator:
                 return java_type
         return "Object"
 
-    def generate_code(self, table, columns, config: dict):
+    def generate_code(self, table, columns):
         # 生成实体类
         entity_content = self._render_template(
             "Entity.java.j2",
             table=table, columns=columns,
             # generator=config.get('type_map'),
-            daoPackage=config.get('daoPackage'), entityPackage=config.get('entityPackage')
+            daoPackage=self.config.generate_config.dao_package,
+            entityPackage=self.config.generate_config.entity_package
         )
         # 生成Mapper接口
         dao_content = self._render_template(
             "Dao.java.j2",
             table=table,
-            daoPackage=config.get('daoPackage'), entityPackage=config.get('entityPackage')
+            daoPackage=self.config.generate_config.dao_package,
+            entityPackage=self.config.generate_config.entity_package
         )
         # 生成XML文件
         xml_content = self._render_template(
             "Mapper.xml.j2",
-            table=table, columns=columns, entityPackage=config.get('entityPackage'),
-            daoPackage=config.get('daoPackage')
+            table=table, columns=columns, daoPackage=self.config.generate_config.dao_package,
+            entityPackage=self.config.generate_config.entity_package
         )
-        entity_path = str(config.get('entityPackage')).replace(".", "/")
-        dao_path = str(config.get('daoPackage')).replace(".", "/")
+        entity_path = str(self.config.generate_config.entity_package).replace(".", "/")
+        dao_path = str(self.config.generate_config.dao_package).replace(".", "/")
+        xml_path = self.config.generate_config.xml_path
+        extra_path = "/temp" if self.config.output_mode == OutputMode.package.name else ""
+        java_path = "" if self.config.output_mode == OutputMode.package.name else "/java"
+        resources_path = "" if self.config.output_mode == OutputMode.package.name else "/resources"
         # 保存文件
-        os.makedirs(f"{config.get('output_path')}/temp/{entity_path}", exist_ok=True)
-        os.makedirs(f"{config.get('output_path')}/temp/{dao_path}", exist_ok=True)
-        os.makedirs(f"{config.get('output_path')}/temp/resource/mappers", exist_ok=True)
+        os.makedirs(f"{self.config.output_path}{extra_path}{java_path}/{entity_path}", exist_ok=True)
+        os.makedirs(f"{self.config.output_path}{extra_path}{java_path}/{dao_path}", exist_ok=True)
+        os.makedirs(f"{self.config.output_path}{extra_path}{resources_path}/{xml_path}", exist_ok=True)
 
-        with open(f"{config.get('output_path')}/temp/{entity_path}/{big_camel_case_filter(table)}.java", "w") as f:
+        with open(f"{self.config.output_path}{extra_path}/{entity_path}/{big_camel_case_filter(table)}.java", "w") as f:
             f.write(entity_content)
-        with open(f"{config.get('output_path')}/temp/{dao_path}/{big_camel_case_filter(table)}Mapper.java", "w") as f:
+        with open(f"{self.config.output_path}{extra_path}/{dao_path}/{big_camel_case_filter(table)}Mapper.java",
+                  "w") as f:
             f.write(dao_content)
-        with open(f"{config.get('output_path')}/temp/resource/mappers/{big_camel_case_filter(table)}Mapper.xml",
+        with open(f"{self.config.output_path}{extra_path}/resource/mappers/{big_camel_case_filter(table)}Mapper.xml",
                   "w") as f:
             f.write(xml_content)
 
@@ -177,10 +284,12 @@ class CodeGenerator:
 
 
 class App(tk.Tk):
-    def __init__(self, generator):
+    def __init__(self, file_path):
         super().__init__()
         self.title("MyBatis代码生成器")
-        self.generator = generator
+        self.file_path = file_path
+        self.config_list = Configuration.load_from_file(file_path)
+        self.generator = None
         self._setup_ui()
         self._load_last_config()
 
@@ -188,19 +297,35 @@ class App(tk.Tk):
         index = 0
         # 数据库配置区域
         ttk.Label(self, text="数据库配置").grid(row=index, column=0, sticky="w")
-        fields = ["host", "port", "user", "password", "database"]
-        default_values = ["localhost", "3306", "root", "123456", "test"]
+        self.datasource_var = tk.StringVar()
+        self.datasource_list = list(map(lambda x: x.name, self.config_list))
+        self.datasource_var.set(self.datasource_list[0])
+        self.datasource_combo = ttk.Combobox(self,
+                                             textvariable=self.datasource_var,
+                                             values=self.datasource_list,
+                                             width=18)
+        self.datasource_combo.current(0)
+        # 绑定事件：当下拉框选项被选中时，调用 _on_combobox_select 方法
+        self.datasource_combo.bind("<<ComboboxSelected>>", self._on_combobox_select)
+        self.datasource_combo.grid(row=index, column=1)
+        self.datasource_combo.bind("<FocusOut>", self._check_option_and_update_cfg)
+        self.datasource_combo.bind("<Return>", self._check_option_and_update_cfg)
+        ttk.Button(self, text="+", width=1, command=self._add_new_config).grid(row=index, column=2)
+        self.datasource_fields = ["host", "port", "user", "password", "database"]
+
         self.entries = {}
-        for i, field in enumerate(fields):
-            ttk.Label(self, text=field.capitalize() + ":").grid(row=i + 1, column=0)
+        for i, field in enumerate(self.datasource_fields):
+            ttk.Label(self, text=field.capitalize() + ":", ).grid(row=i + 1, column=0)
             entry = ttk.Entry(self)
+            entry.bind('<FocusOut>', self._refresh_db_obj)
+            entry.bind("<Return>", self._refresh_db_obj)
             entry.grid(row=i + 1, column=1)
-            entry.insert(0, default_values[i])
+            # entry.insert(0, default_values[i])
             self.entries[field] = entry
-        index += len(fields)
+        index += len(self.datasource_fields)
 
         # 表选择与生成配置
-        ttk.Button(self, text="测试连接", command=self.connect_db).grid(row=index + 1, column=1)
+        ttk.Button(self, text="测试连接", command=self.try_connect_db).grid(row=index + 1, column=1)
         index += 1
 
         # ========== 表选择区域 ==========
@@ -236,6 +361,17 @@ class App(tk.Tk):
         index += 1
         self.table_list.config(yscrollcommand=scrollbar.set)
 
+        ttk.Label(self, text="输出方式:").grid(row=index + 1, column=0)
+        self.output_mode = tk.StringVar(value=OutputMode.package.name)
+        form_frame = tk.Frame(self)
+        form_frame.grid(row=index + 1, column=1, sticky="ew")
+        rb1 = tk.Radiobutton(form_frame, text="压缩包", variable=self.output_mode, value=OutputMode.package.name)
+        rb1.grid(row=0, column=0, sticky="w", padx=(0, 15))
+        rb2 = tk.Radiobutton(form_frame, text="写入目录", variable=self.output_mode,
+                             value=OutputMode.write_into_path.name)
+        rb2.grid(row=0, column=1, sticky="w", padx=(0, 15))
+        index += 1
+
         ttk.Label(self, text="输出路径:").grid(row=index + 1, column=0)
         self.output_entry = ttk.Entry(self)
         self.output_entry.grid(row=index + 1, column=1, sticky="ew")
@@ -251,22 +387,94 @@ class App(tk.Tk):
         self.interface_package_entry.grid(row=index + 1, column=1, sticky="ew")
         index += 1
 
+        ttk.Label(self, text="xml路径:").grid(row=index + 1, column=0)
+        self.xml_path_entry = ttk.Entry(self)
+        self.xml_path_entry.grid(row=index + 1, column=1, sticky="ew")
+        ttk.Button(self, text="保存配置", command=self.save_file).grid(row=index + 1, column=2)
+        index += 1
+
         start_button = ttk.Button(self, text="生成代码", command=self.generate)
         start_button.grid(row=index + 1, column=1)
         index += 1
 
-    def _load_last_config(self):
-        config = self.generator.config
-        for field, entry in self.entries.items():
-            if field in config.get("db_config", {}):
-                entry.delete(0, tk.END)
-                entry.insert(0, config["db_config"][field])
-        self.output_entry.insert(0, config.get("output_path", "./"))
-        self.entity_package_entry.insert(0, config.get("entityPackage", "com.example.dao.pojo"))
-        self.interface_package_entry.insert(0, config.get('daoPackage', "com.example.dao"))
+    def _on_combobox_select(self, event):
+        datasource_config = self.config_list[self.datasource_combo.current()]
+        self._update_all_info_from_cfg(datasource_config)
 
-    def connect_db(self):
+    def _update_all_info_from_cfg(self, datasource_config):
+        self._update_db_info_from_cfg(datasource_config)
+        self.output_mode.set(datasource_config.output_mode)
+        self.output_entry.delete(0, tk.END)
+        self.output_entry.insert(0, datasource_config.output_path if datasource_config.output_path else './')
+        entity_package = datasource_config.generate_config.entity_package
+        self.entity_package_entry.delete(0, tk.END)
+        self.entity_package_entry.insert(0, entity_package if entity_package else "com.example.dao.pojo")
+        dao_package = datasource_config.generate_config.dao_package
+        self.interface_package_entry.delete(0, tk.END)
+        self.interface_package_entry.insert(0, dao_package if dao_package else "com.example.dao")
+        self.table_list.delete(0, tk.END)
+        xml_path = datasource_config.generate_config.xml_path
+        self.xml_path_entry.delete(0, tk.END)
+        self.xml_path_entry.insert(0, xml_path if xml_path else 'resource/mappers')
+
+    def _refresh_db_obj(self, event):
+        config = self.config_list[self.datasource_combo.current()]
+        self._update_db_cfg_from_info(config)
+
+    def _update_all_cfg_from_info(self, config: Configuration):
+        self._update_db_cfg_from_info(config)
+        config.output_mode = self.output_mode.get()
+        config.output_path = self.output_entry.get()
+        config.generate_config.entity_package = self.entity_package_entry.get()
+        config.generate_config.dao_package = self.interface_package_entry.get()
+        config.generate_config.xml_path = self.xml_path_entry.get()
+
+    # def
+    def _update_db_cfg_from_info(self, config: Configuration):
+        for field, entry in self.entries.items():
+            if field == 'host':
+                config.db.host = entry.get()
+            if field == 'port':
+                config.db.port = int(entry.get())
+            if field == 'user':
+                config.db.user = entry.get()
+            if field == 'password':
+                config.db.password = entry.get()
+            if field == 'database':
+                config.db.database = entry.get()
+
+    def _check_option_and_update_cfg(self, event):
+        new_name = self.datasource_var.get()
+        val_list = list(self.datasource_combo['values'])
+        if val_list[self.datasource_combo.current()] != new_name:
+            val_list[self.datasource_combo.current()] = new_name
+            self.datasource_combo['values'] = val_list
+            self.config_list[self.datasource_combo.current()].name = new_name
+
+    def _add_new_config(self):
+        new_cfg = Configuration.empty_config()
+        new_cfg.name = '新配置'
+        new_options = list(self.datasource_combo['values'])
+        new_options.append(new_cfg.name)
+        self.datasource_combo['values'] = new_options
+        self.datasource_combo.current(len(self.config_list))
+        self.config_list.append(new_cfg)
+        self._update_all_info_from_cfg(new_cfg)
+
+    def _load_last_config(self):
+        index = self.datasource_combo.current()
+        datasource_config = self.config_list[index]
+        self._update_all_info_from_cfg(datasource_config)
+
+    def _update_db_info_from_cfg(self, datasource_config):
+        for field, entry in self.entries.items():
+            entry.delete(0, tk.END)
+            entry.insert(0, getattr(datasource_config.db, field, '') or '')
+
+    def try_connect_db(self):
         try:
+            config = self.config_list[self.datasource_combo.current()]
+            self.generator = CodeGenerator(config)
             conn = self.generator.connect_db(
                 self.entries["host"].get(),
                 self.entries["port"].get(),
@@ -280,6 +488,7 @@ class App(tk.Tk):
                 self.table_list.insert(tk.END, table)
             conn.close()
         except Exception as e:
+            print(e.with_traceback())
             messagebox.showerror("错误", str(e))
 
     def browse_path(self):
@@ -296,17 +505,25 @@ class App(tk.Tk):
         """取消全选"""
         self.table_list.selection_clear(0, tk.END)
 
+    def save_file(self):
+        rs = []
+        current_config = self.config_list[self.datasource_combo.current()]
+        self._update_all_cfg_from_info(current_config)
+        for config in self.config_list:
+            rs.append(json.loads(config.to_json(ensure_ascii=False)))
+        config_path = Path(self.file_path).expanduser()
+        if not os.path.exists(config_path):
+            if not os.path.exists(config_path.parent):
+                config_path.parent.mkdir()
+            config_path.touch()
+        with open(config_path, 'w') as f:
+            json.dump(rs, f, indent=4, ensure_ascii=False)
+
     def generate(self):
 
         try:
             # 保存配置
-            self.generator.config.update({
-                "output_path": self.output_entry.get(),
-                "entityPackage": self.entity_package_entry.get(),
-                "daoPackage": self.interface_package_entry.get(),
-                # "type_map": self.generator.type_map
-            })
-            self.generator.save_config()
+            self._update_all_cfg_from_info(self.generator.config)
 
             # 生成代码
             selected_tables = [self.table_list.get(i) for i in self.table_list.curselection()]
@@ -314,21 +531,26 @@ class App(tk.Tk):
                 messagebox.showwarning("警告", "请选择至少一个表")
                 return
 
-            conn = self.generator.connect_db(**self.generator.config["db_config"])
+            conn = self.generator.connect_db(
+                host=self.generator.config.db.host,
+                port=self.generator.config.db.port,
+                user=self.generator.config.db.user,
+                password=self.generator.config.db.password,
+                database=self.generator.config.db.database
+            )
             for table in selected_tables:
                 columns = self.generator.get_table_columns(conn, table)
                 self.generator.generate_code(
-                    table, columns,
-                    self.generator.config
-                )
+                    table, columns)
             conn.close()
-            zip_folder(f"{self.generator.config.get('output_path')}/temp",
-                       f"{self.generator.config.get('output_path')}/output.zip")
-            try:
-                # os.remove(f"{self.generator.config.get('output_path')}/temp")
-                shutil.rmtree(f"{self.generator.config.get('output_path')}/temp")
-            except Exception as e:
-                print(f"删除文件失败：{e.with_traceback()}")
+            if self.generator.config.output_mode == OutputMode.package.name:
+                zip_folder(f"{self.generator.config.output_path}/temp",
+                           f"{self.generator.config.output_path}/output.zip")
+                try:
+                    # os.remove(f"{self.generator.config.get('output_path')}/temp")
+                    shutil.rmtree(f"{self.generator.config.output_path}/temp")
+                except Exception as e:
+                    print(f"删除文件失败：{e.with_traceback()}")
             messagebox.showinfo("成功", f"已生成{len(selected_tables)}个表的代码")
         except Exception as e:
             print(e.with_traceback())
@@ -336,6 +558,5 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
-    generator = CodeGenerator()
-    app = App(generator)
+    app = App(config_cache_path)
     app.mainloop()
