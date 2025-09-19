@@ -112,7 +112,7 @@ class DbConfig:
 @dataclass
 @dataclass_json
 class GenerateConfig:
-    type_map: Optional[dict] = field(default=dict)
+    type_map: Optional[dict] = field(default_factory=dict)
     entity_package: Optional[str] = None
     dao_package: Optional[str] = None
     xml_path: Optional[str] = None
@@ -135,7 +135,7 @@ class Configuration:
         cfg.db = DbConfig.default_db()
         cfg.generate_config = GenerateConfig()
         cfg.generate_config.type_map = DEFAULT_TYPE_MAP
-        cfg.generate_config.xml_path = 'resource/mappers'
+        cfg.generate_config.xml_path = 'mappers'
         cfg.output_mode = OutputMode.package.name
         return cfg
 
@@ -146,7 +146,7 @@ class Configuration:
         cfg.db = DbConfig()
         cfg.generate_config = GenerateConfig()
         cfg.generate_config.type_map = DEFAULT_TYPE_MAP
-        cfg.generate_config.xml_path = 'resource/mappers'
+        cfg.generate_config.xml_path = 'mappers'
         cfg.output_mode = OutputMode.package.name
         return cfg
 
@@ -154,19 +154,20 @@ class Configuration:
     def load_from_file(file_path) -> []:
         try:
             if os.path.exists(file_path):
-                with open(file_path, 'r') as f:
+                with open(file_path, 'r', encoding='utf-8') as f:
                     js_config = json.load(f)
                     result = []
                     for item in js_config:
                         config_obj = Configuration()
                         config_obj.name = item.get('name')
                         config_obj.output_mode = item.get('output_mode')
+                        config_obj.output_path = item.get('output_path')
 
                         db_js = item.get('db')
                         config_obj.db = DbConfig()
                         db = config_obj.db
                         db.host = db_js.get('host')
-                        db.port = int(db_js.get('port')) or 3306
+                        db.port = int(db_js.get('port') or 3306)
                         db.user = db_js.get('user')
                         db.password = db_js.get('password')
                         db.database = db_js.get('database')
@@ -241,7 +242,6 @@ class CodeGenerator:
         entity_content = self._render_template(
             "Entity.java.j2",
             table=table, columns=columns,
-            # generator=config.get('type_map'),
             daoPackage=self.config.generate_config.dao_package,
             entityPackage=self.config.generate_config.entity_package
         )
@@ -261,22 +261,38 @@ class CodeGenerator:
         entity_path = str(self.config.generate_config.entity_package).replace(".", "/")
         dao_path = str(self.config.generate_config.dao_package).replace(".", "/")
         xml_path = self.config.generate_config.xml_path
-        extra_path = "/temp" if self.config.output_mode == OutputMode.package.name else ""
-        java_path = "" if self.config.output_mode == OutputMode.package.name else "/java"
-        resources_path = "" if self.config.output_mode == OutputMode.package.name else "/resources"
-        # 保存文件
-        os.makedirs(f"{self.config.output_path}{extra_path}{java_path}/{entity_path}", exist_ok=True)
-        os.makedirs(f"{self.config.output_path}{extra_path}{java_path}/{dao_path}", exist_ok=True)
-        os.makedirs(f"{self.config.output_path}{extra_path}{resources_path}/{xml_path}", exist_ok=True)
 
-        with open(f"{self.config.output_path}{extra_path}/{entity_path}/{big_camel_case_filter(table)}.java", "w") as f:
-            f.write(entity_content)
-        with open(f"{self.config.output_path}{extra_path}/{dao_path}/{big_camel_case_filter(table)}Mapper.java",
-                  "w") as f:
-            f.write(dao_content)
-        with open(f"{self.config.output_path}{extra_path}/resource/mappers/{big_camel_case_filter(table)}Mapper.xml",
-                  "w") as f:
-            f.write(xml_content)
+        output_base = Path(self.config.output_path)
+        temp_dir = output_base / "temp"
+
+        # 根据输出模式确定最终路径
+        if self.config.output_mode == OutputMode.package.name:
+            # 压缩包模式，文件先写入临时目录
+            base_write_path = temp_dir
+            java_root = base_write_path / "java"
+            resources_root = base_write_path / "resources"
+        else:
+            # 直接写入模式
+            base_write_path = output_base
+            java_root = base_write_path / "java"
+            resources_root = base_write_path / "resources"
+
+        # 拼接完整路径
+        entity_dir = java_root / entity_path
+        dao_dir = java_root / dao_path
+        xml_dir = resources_root / xml_path
+
+        # 创建目录
+        entity_dir.mkdir(parents=True, exist_ok=True)
+        dao_dir.mkdir(parents=True, exist_ok=True)
+        xml_dir.mkdir(parents=True, exist_ok=True)
+
+        entity_name = big_camel_case_filter(table)
+
+        # 写入文件
+        (entity_dir / f"{entity_name}.java").write_text(entity_content, encoding='utf-8')
+        (dao_dir / f"{entity_name}Mapper.java").write_text(dao_content, encoding='utf-8')
+        (xml_dir / f"{entity_name}Mapper.xml").write_text(xml_content, encoding='utf-8')
 
     def _render_template(self, template_name, **context):
         template = self.jinja_env.get_template(template_name)
@@ -287,6 +303,17 @@ class App(tk.Tk):
     def __init__(self, file_path):
         super().__init__()
         self.title("MyBatis代码生成器")
+
+        # --- 新增: 窗口缩放配置 ---
+        # 设置窗口的最小尺寸，防止缩得太小导致控件错乱
+        self.minsize(450, 600)
+        # 配置主窗口的网格权重
+        # 第1列（包含大部分输入框）权重设为1，使其可以水平拉伸
+        self.grid_columnconfigure(1, weight=1)
+        # 第1行（包含表选择区域）权重设为1，使其可以垂直拉伸
+        self.grid_rowconfigure(1, weight=1)
+        # --- 新增结束 ---
+
         self.file_path = file_path
         self.config_list = Configuration.load_from_file(file_path)
         self.generator = None
@@ -294,108 +321,135 @@ class App(tk.Tk):
         self._load_last_config()
 
     def _setup_ui(self):
-        index = 0
-        # 数据库配置区域
-        ttk.Label(self, text="数据库配置").grid(row=index, column=0, sticky="w")
+        # 使用一个局部变量来跟踪行号，比原来的全局 index 更清晰
+        row_index = 0
+
+        # --- 数据库配置区域 ---
+        db_config_frame = ttk.LabelFrame(self, text="数据库配置")
+        # 修改: 使用 sticky='ew' 让控件横向填充，columnspan=3 让其跨越3列
+        db_config_frame.grid(row=row_index, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        row_index += 1
+
+        # 修改: 为容器配置列权重，让输入框列可以拉伸
+        db_config_frame.grid_columnconfigure(1, weight=1)
+
+        ttk.Label(db_config_frame, text="选择配置:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
         self.datasource_var = tk.StringVar()
         self.datasource_list = list(map(lambda x: x.name, self.config_list))
-        self.datasource_var.set(self.datasource_list[0])
-        self.datasource_combo = ttk.Combobox(self,
+        self.datasource_var.set(self.datasource_list[0] if self.datasource_list else "")
+        self.datasource_combo = ttk.Combobox(db_config_frame,
                                              textvariable=self.datasource_var,
-                                             values=self.datasource_list,
-                                             width=18)
-        self.datasource_combo.current(0)
-        # 绑定事件：当下拉框选项被选中时，调用 _on_combobox_select 方法
+                                             values=self.datasource_list)
+        if self.datasource_list:
+            self.datasource_combo.current(0)
         self.datasource_combo.bind("<<ComboboxSelected>>", self._on_combobox_select)
-        self.datasource_combo.grid(row=index, column=1)
         self.datasource_combo.bind("<FocusOut>", self._check_option_and_update_cfg)
         self.datasource_combo.bind("<Return>", self._check_option_and_update_cfg)
-        ttk.Button(self, text="+", width=1, command=self._add_new_config).grid(row=index, column=2)
-        self.datasource_fields = ["host", "port", "user", "password", "database"]
 
+        # 修改: 使用 sticky='ew' 让下拉框横向填充
+        self.datasource_combo.grid(row=0, column=1, sticky="ew", padx=5, pady=2)
+
+        ttk.Button(db_config_frame, text="+", width=2, command=self._add_new_config).grid(row=0, column=2, padx=5)
+
+        self.datasource_fields = ["host", "port", "user", "password", "database"]
         self.entries = {}
-        for i, field in enumerate(self.datasource_fields):
-            ttk.Label(self, text=field.capitalize() + ":", ).grid(row=i + 1, column=0)
-            entry = ttk.Entry(self)
+        for i, field in enumerate(self.datasource_fields, start=1):
+            ttk.Label(db_config_frame, text=field.capitalize() + ":").grid(row=i, column=0, sticky="w", padx=5, pady=2)
+            if field == 'password':
+                self.show_password = tk.BooleanVar()
+                entry = ttk.Entry(db_config_frame, show="*")
+                (ttk.Checkbutton(db_config_frame, text="", variable=self.show_password, command=self._toggle_password)
+                 .grid(row=i, column=3, sticky="w", padx=5, pady=2))
+            else:
+                entry = ttk.Entry(db_config_frame)
             entry.bind('<FocusOut>', self._refresh_db_obj)
             entry.bind("<Return>", self._refresh_db_obj)
-            entry.grid(row=i + 1, column=1)
-            # entry.insert(0, default_values[i])
+            # 修改: 使用 sticky='ew' 让输入框横向填充
+            entry.grid(row=i, column=1, columnspan=2, sticky="ew", padx=5, pady=2)
             self.entries[field] = entry
-        index += len(self.datasource_fields)
 
-        # 表选择与生成配置
-        ttk.Button(self, text="测试连接", command=self.try_connect_db).grid(row=index + 1, column=1)
-        index += 1
+        ttk.Button(db_config_frame, text="测试连接", command=self.try_connect_db).grid(
+            row=len(self.datasource_fields) + 1, column=1, pady=5)
 
-        # ========== 表选择区域 ==========
+        # --- 表选择区域 ---
+        # 这个区域是垂直拉伸的关键
         table_frame = ttk.LabelFrame(self, text="表选择")
-        table_frame.grid(row=index + 1, column=0, padx=10, pady=5, sticky="nsew", columnspan=3)
-        index += 1
-        table_frame.grid_rowconfigure(0, weight=1)
+        # 修改: columnspan=3 让其跨越3列, sticky='nsew' 让其填充水平和垂直空间
+        table_frame.grid(row=row_index, column=0, columnspan=3, padx=10, pady=5, sticky="nsew")
+        row_index += 1
+
+        # --- 新增: 配置 table_frame 内部的网格权重 ---
         table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(1, weight=1)
 
-        # 表操作按钮区域
+        # 表操作按钮区域 (位于 table_frame 内部的第0行)
         btn_frame = ttk.Frame(table_frame)
-        btn_frame.grid(row=index + 1, column=0, sticky="ew", pady=5)
-        index += 1
+        btn_frame.grid(row=0, column=0, sticky="ew", pady=5)
+        ttk.Button(btn_frame, text="全部勾选", width=10, command=self.select_all_tables).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="全部取消", width=10, command=self.deselect_all_tables).pack(side=tk.LEFT, padx=5)
 
-        ttk.Button(btn_frame, text="全部勾选", width=10,
-                   command=self.select_all_tables).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="全部取消", width=10,
-                   command=self.deselect_all_tables).pack(side=tk.LEFT, padx=5)
-
-        # 表选择列表框
+        # 表选择列表框 (位于 table_frame 内部的第1行)
         list_frame = ttk.Frame(table_frame)
-        list_frame.grid(row=index + 1, column=0, sticky="nsew")
-        index += 1
+        list_frame.grid(row=1, column=0, sticky="nsew")
+
+        # --- 新增: 配置 list_frame 内部的网格权重 ---
         list_frame.grid_rowconfigure(0, weight=1)
         list_frame.grid_columnconfigure(0, weight=1)
 
         self.table_list = tk.Listbox(list_frame, selectmode="extended", height=8)
-        self.table_list.grid(row=index + 1, column=0, sticky="nsew")
-        index += 1
-
+        self.table_list.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.table_list.yview)
-        scrollbar.grid(row=index + 1, column=1, sticky="ns")
-        index += 1
+        scrollbar.grid(row=0, column=1, sticky="ns")
         self.table_list.config(yscrollcommand=scrollbar.set)
 
-        ttk.Label(self, text="输出方式:").grid(row=index + 1, column=0)
+        # --- 生成配置区域 ---
+        gen_config_frame = ttk.LabelFrame(self, text="生成配置")
+        gen_config_frame.grid(row=row_index, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        row_index += 1
+
+        gen_config_frame.grid_columnconfigure(1, weight=1)
+
+        ttk.Label(gen_config_frame, text="输出方式:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
         self.output_mode = tk.StringVar(value=OutputMode.package.name)
-        form_frame = tk.Frame(self)
-        form_frame.grid(row=index + 1, column=1, sticky="ew")
+        form_frame = tk.Frame(gen_config_frame)
+        form_frame.grid(row=0, column=1, columnspan=2, sticky="w")
         rb1 = tk.Radiobutton(form_frame, text="压缩包", variable=self.output_mode, value=OutputMode.package.name)
-        rb1.grid(row=0, column=0, sticky="w", padx=(0, 15))
+        rb1.pack(side=tk.LEFT)
         rb2 = tk.Radiobutton(form_frame, text="写入目录", variable=self.output_mode,
                              value=OutputMode.write_into_path.name)
-        rb2.grid(row=0, column=1, sticky="w", padx=(0, 15))
-        index += 1
+        rb2.pack(side=tk.LEFT)
 
-        ttk.Label(self, text="输出路径:").grid(row=index + 1, column=0)
-        self.output_entry = ttk.Entry(self)
-        self.output_entry.grid(row=index + 1, column=1, sticky="ew")
-        ttk.Button(self, text="浏览", command=self.browse_path).grid(row=index + 1, column=2)
-        index += 1
+        ttk.Label(gen_config_frame, text="输出路径:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        self.output_entry = ttk.Entry(gen_config_frame)
+        self.output_entry.grid(row=1, column=1, sticky="ew", padx=(5, 0))
+        ttk.Button(gen_config_frame, text="浏览", command=self.browse_path).grid(row=1, column=2, padx=(0, 5))
 
-        ttk.Label(self, text="实体包名:").grid(row=index + 1, column=0)
-        self.entity_package_entry = ttk.Entry(self)
-        self.entity_package_entry.grid(row=index + 1, column=1, sticky="ew")
-        index += 1
-        ttk.Label(self, text="接口包名:").grid(row=index + 1, column=0)
-        self.interface_package_entry = ttk.Entry(self)
-        self.interface_package_entry.grid(row=index + 1, column=1, sticky="ew")
-        index += 1
+        ttk.Label(gen_config_frame, text="实体包名:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        self.entity_package_entry = ttk.Entry(gen_config_frame)
+        self.entity_package_entry.grid(row=2, column=1, columnspan=2, sticky="ew", padx=5)
 
-        ttk.Label(self, text="xml路径:").grid(row=index + 1, column=0)
-        self.xml_path_entry = ttk.Entry(self)
-        self.xml_path_entry.grid(row=index + 1, column=1, sticky="ew")
-        ttk.Button(self, text="保存配置", command=self.save_file).grid(row=index + 1, column=2)
-        index += 1
+        ttk.Label(gen_config_frame, text="接口包名:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        self.interface_package_entry = ttk.Entry(gen_config_frame)
+        self.interface_package_entry.grid(row=3, column=1, columnspan=2, sticky="ew", padx=5)
 
-        start_button = ttk.Button(self, text="生成代码", command=self.generate)
-        start_button.grid(row=index + 1, column=1)
-        index += 1
+        ttk.Label(gen_config_frame, text="xml路径:").grid(row=4, column=0, sticky="w", padx=5, pady=2)
+        self.xml_path_entry = ttk.Entry(gen_config_frame)
+        self.xml_path_entry.grid(row=4, column=1, sticky="ew", padx=(5, 0))
+        ttk.Button(gen_config_frame, text="保存配置", command=self.save_file).grid(row=4, column=2, padx=(0, 5))
+
+        # --- 操作按钮 ---
+        action_frame = ttk.Frame(self)
+        action_frame.grid(row=row_index, column=0, columnspan=3, pady=10)
+        row_index += 1
+
+        start_button = ttk.Button(action_frame, text="生成代码", command=self.generate)
+        start_button.pack()
+
+    def _toggle_password(self):
+        if self.show_password.get():
+            self.entries.get('password').config(show='')
+        else:
+            self.entries.get('password').config(show="*")
 
     def _on_combobox_select(self, event):
         datasource_config = self.config_list[self.datasource_combo.current()]
@@ -429,13 +483,15 @@ class App(tk.Tk):
         config.generate_config.dao_package = self.interface_package_entry.get()
         config.generate_config.xml_path = self.xml_path_entry.get()
 
-    # def
     def _update_db_cfg_from_info(self, config: Configuration):
         for field, entry in self.entries.items():
             if field == 'host':
                 config.db.host = entry.get()
             if field == 'port':
-                config.db.port = int(entry.get())
+                try:
+                    config.db.port = int(entry.get())
+                except (ValueError, TypeError):
+                    config.db.port = 3306  # Default port if entry is invalid
             if field == 'user':
                 config.db.user = entry.get()
             if field == 'password':
@@ -445,51 +501,64 @@ class App(tk.Tk):
 
     def _check_option_and_update_cfg(self, event):
         new_name = self.datasource_var.get()
+        current_index = self.datasource_combo.current()
+        if current_index == -1: return  # Nothing selected
+
         val_list = list(self.datasource_combo['values'])
-        if val_list[self.datasource_combo.current()] != new_name:
-            val_list[self.datasource_combo.current()] = new_name
+        if val_list[current_index] != new_name:
+            val_list[current_index] = new_name
             self.datasource_combo['values'] = val_list
-            self.config_list[self.datasource_combo.current()].name = new_name
+            self.config_list[current_index].name = new_name
 
     def _add_new_config(self):
         new_cfg = Configuration.empty_config()
-        new_cfg.name = '新配置'
+        new_cfg.name = f'新配置_{len(self.config_list) + 1}'
+        self.config_list.append(new_cfg)
+
         new_options = list(self.datasource_combo['values'])
         new_options.append(new_cfg.name)
         self.datasource_combo['values'] = new_options
-        self.datasource_combo.current(len(self.config_list))
-        self.config_list.append(new_cfg)
+        self.datasource_combo.current(len(self.config_list) - 1)
         self._update_all_info_from_cfg(new_cfg)
 
     def _load_last_config(self):
-        index = self.datasource_combo.current()
-        datasource_config = self.config_list[index]
-        self._update_all_info_from_cfg(datasource_config)
+        if not self.config_list:
+            self._add_new_config()
+        else:
+            index = self.datasource_combo.current()
+            datasource_config = self.config_list[index]
+            self._update_all_info_from_cfg(datasource_config)
 
     def _update_db_info_from_cfg(self, datasource_config):
         for field, entry in self.entries.items():
             entry.delete(0, tk.END)
-            entry.insert(0, getattr(datasource_config.db, field, '') or '')
+            value = getattr(datasource_config.db, field, '')
+            entry.insert(0, str(value) if value is not None else '')
 
     def try_connect_db(self):
         try:
-            config = self.config_list[self.datasource_combo.current()]
+            config_index = self.datasource_combo.current()
+            if config_index == -1:
+                messagebox.showerror("错误", "请先选择一个配置")
+                return
+            config = self.config_list[config_index]
+            self._update_all_cfg_from_info(config)  # Ensure current entries are used
             self.generator = CodeGenerator(config)
             conn = self.generator.connect_db(
-                self.entries["host"].get(),
-                self.entries["port"].get(),
-                self.entries["user"].get(),
-                self.entries["password"].get(),
-                self.entries["database"].get()
+                config.db.host,
+                config.db.port,
+                config.db.user,
+                config.db.password,
+                config.db.database
             )
             tables = self.generator.get_tables(conn)
             self.table_list.delete(0, tk.END)
             for table in tables:
                 self.table_list.insert(tk.END, table)
             conn.close()
+            # messagebox.showinfo("成功", "数据库连接成功，已加载所有表！")
         except Exception as e:
-            print(e.with_traceback())
-            messagebox.showerror("错误", str(e))
+            messagebox.showerror("连接失败", str(e))
 
     def browse_path(self):
         path = filedialog.askdirectory()
@@ -506,29 +575,43 @@ class App(tk.Tk):
         self.table_list.selection_clear(0, tk.END)
 
     def save_file(self):
-        rs = []
-        current_config = self.config_list[self.datasource_combo.current()]
-        self._update_all_cfg_from_info(current_config)
-        for config in self.config_list:
-            rs.append(json.loads(config.to_json(ensure_ascii=False)))
-        config_path = Path(self.file_path).expanduser()
-        if not os.path.exists(config_path):
-            if not os.path.exists(config_path.parent):
-                config_path.parent.mkdir()
-            config_path.touch()
-        with open(config_path, 'w') as f:
-            json.dump(rs, f, indent=4, ensure_ascii=False)
+        try:
+            rs = []
+            current_config_index = self.datasource_combo.current()
+            if current_config_index != -1:
+                current_config = self.config_list[current_config_index]
+                self._update_all_cfg_from_info(current_config)
+
+            for config in self.config_list:
+                rs.append(json.loads(config.to_json(ensure_ascii=False)))
+
+            config_path = Path(self.file_path)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(rs, f, indent=4, ensure_ascii=False)
+            messagebox.showinfo("成功", f"配置已保存到:\n{config_path.resolve()}")
+        except Exception as e:
+            messagebox.showerror("保存失败", f"保存配置文件时出错: {e}")
 
     def generate(self):
-
         try:
-            # 保存配置
-            self._update_all_cfg_from_info(self.generator.config)
+            current_config_index = self.datasource_combo.current()
+            if current_config_index == -1:
+                messagebox.showerror("错误", "请先选择一个配置")
+                return
 
-            # 生成代码
+            config = self.config_list[current_config_index]
+            self._update_all_cfg_from_info(config)
+            self.generator = CodeGenerator(config)
+
             selected_tables = [self.table_list.get(i) for i in self.table_list.curselection()]
             if not selected_tables:
                 messagebox.showwarning("警告", "请选择至少一个表")
+                return
+
+            if not self.generator.config.output_path:
+                messagebox.showwarning("警告", "请指定输出路径")
                 return
 
             conn = self.generator.connect_db(
@@ -540,20 +623,21 @@ class App(tk.Tk):
             )
             for table in selected_tables:
                 columns = self.generator.get_table_columns(conn, table)
-                self.generator.generate_code(
-                    table, columns)
+                self.generator.generate_code(table, columns)
             conn.close()
+
             if self.generator.config.output_mode == OutputMode.package.name:
-                zip_folder(f"{self.generator.config.output_path}/temp",
-                           f"{self.generator.config.output_path}/output.zip")
+                output_path = Path(self.generator.config.output_path)
+                temp_folder = output_path / "temp"
+                zip_file = output_path / "output.zip"
+                zip_folder(str(temp_folder), str(zip_file))
                 try:
-                    # os.remove(f"{self.generator.config.get('output_path')}/temp")
-                    shutil.rmtree(f"{self.generator.config.output_path}/temp")
+                    shutil.rmtree(temp_folder)
                 except Exception as e:
-                    print(f"删除文件失败：{e.with_traceback()}")
-            messagebox.showinfo("成功", f"已生成{len(selected_tables)}个表的代码")
+                    print(f"删除临时文件失败：{e}")
+
+            messagebox.showinfo("成功", f"已生成 {len(selected_tables)} 个表的代码！")
         except Exception as e:
-            print(e.with_traceback())
             messagebox.showerror("生成失败", str(e))
 
 
