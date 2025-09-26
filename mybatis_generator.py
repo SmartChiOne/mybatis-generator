@@ -232,9 +232,9 @@ class CodeGenerator:
 
     def map_java_type(self, mysql_type):
         mysql_type = mysql_type.upper()
-        for key, java_type in self.type_map.items():
+        for key in sorted(self.type_map.keys(), key=len, reverse=True):
             if key in mysql_type:
-                return java_type
+                return self.type_map[key]
         return "Object"
 
     def generate_code(self, table, columns):
@@ -315,6 +315,8 @@ class App(tk.Tk):
         self.file_path = file_path
         self.config_list = Configuration.load_from_file(file_path)
         self.generator = None
+        # 当前配置索引
+        self.active_config_index = None
         self._setup_ui()
         self._load_last_config()
 
@@ -340,6 +342,7 @@ class App(tk.Tk):
                                              values=self.datasource_list)
         if self.datasource_list:
             self.datasource_combo.current(0)
+            self.active_config_index = 0
         self.datasource_combo.bind("<<ComboboxSelected>>", self._on_combobox_select)
         self.datasource_combo.bind("<FocusOut>", self._check_option_and_update_cfg)
         self.datasource_combo.bind("<Return>", self._check_option_and_update_cfg)
@@ -348,6 +351,7 @@ class App(tk.Tk):
         self.datasource_combo.grid(row=0, column=1, sticky="ew", padx=5, pady=2)
 
         ttk.Button(db_config_frame, text="+", width=2, command=self._add_new_config).grid(row=0, column=2, padx=5)
+        ttk.Button(db_config_frame, text="-", width=2, command=self._delete_config).grid(row=0, column=3, padx=5)
 
         self.datasource_fields = ["host", "port", "user", "password", "database"]
         self.entries = {}
@@ -450,7 +454,8 @@ class App(tk.Tk):
             self.entries.get('password').config(show="*")
 
     def _on_combobox_select(self, event):
-        datasource_config = self.config_list[self.datasource_combo.current()]
+        self.active_config_index = self.datasource_combo.current()
+        datasource_config = self.config_list[self.active_config_index]
         self._update_all_info_from_cfg(datasource_config)
 
     def _update_all_info_from_cfg(self, datasource_config):
@@ -470,8 +475,9 @@ class App(tk.Tk):
         self.xml_path_entry.insert(0, xml_path if xml_path else 'resource/mappers')
 
     def _refresh_db_obj(self, event):
-        config = self.config_list[self.datasource_combo.current()]
-        self._update_db_cfg_from_info(config)
+        if self.active_config_index is not None and self.active_config_index < len(self.config_list):
+            config = self.config_list[self.active_config_index]
+            self._update_db_cfg_from_info(config)
 
     def _update_all_cfg_from_info(self, config: Configuration):
         self._update_db_cfg_from_info(config)
@@ -498,33 +504,85 @@ class App(tk.Tk):
                 config.db.database = entry.get()
 
     def _check_option_and_update_cfg(self, event):
-        new_name = self.datasource_var.get()
-        current_index = self.datasource_combo.current()
-        if current_index == -1: return  # Nothing selected
+        """
+        当Combobox失去焦点或按下回车时，更新配置名称。
+        优化点：不使用 .current()，而是使用 self.active_config_index。
+        """
+        if self.active_config_index is None:
+            return  # 如果没有活动索引，则不执行任何操作
 
-        val_list = list(self.datasource_combo['values'])
-        if val_list[current_index] != new_name:
-            val_list[current_index] = new_name
-            self.datasource_combo['values'] = val_list
-            self.config_list[current_index].name = new_name
+        new_name = self.datasource_var.get()
+        # 检查新名称是否为空
+        if not new_name.strip():
+            # 如果名称为空，恢复为旧名称并提示用户
+            old_name = self.config_list[self.active_config_index].name
+            self.datasource_var.set(old_name)
+            messagebox.showwarning("提示", "配置名称不能为空！")
+            return
+
+        old_name = self.config_list[self.active_config_index].name
+
+        # 仅当名称发生变化时才更新
+        if old_name != new_name:
+            # 1. 更新数据模型中的名称
+            self.config_list[self.active_config_index].name = new_name
+
+            # 2. 更新Combobox显示列表
+            values = list(self.datasource_combo['values'])
+            values[self.active_config_index] = new_name
+            self.datasource_combo['values'] = values
+            print(f"配置名称已从 '{old_name}' 更新为 '{new_name}'")
 
     def _add_new_config(self):
         new_cfg = Configuration.empty_config()
-        new_cfg.name = f'新配置_{len(self.config_list) + 1}'
+        new_name_base = "新配置"
+        new_name_suffix = 1
+        existing_names = {cfg.name for cfg in self.config_list}
+
+        # 确保新名称不重复
+        new_name = f"{new_name_base}_{new_name_suffix}"
+        while new_name in existing_names:
+            new_name_suffix += 1
+            new_name = f"{new_name_base}_{new_name_suffix}"
+
+        new_cfg.name = new_name
         self.config_list.append(new_cfg)
 
         new_options = list(self.datasource_combo['values'])
         new_options.append(new_cfg.name)
         self.datasource_combo['values'] = new_options
-        self.datasource_combo.current(len(self.config_list) - 1)
+
+        new_index = len(self.config_list) - 1
+        self.datasource_combo.current(new_index)
+
+        # 更新活动索引
+        self.active_config_index = new_index
         self._update_all_info_from_cfg(new_cfg)
+
+    def _delete_config(self):
+        if len(self.config_list) == 0:
+            return
+        current_index = self.active_config_index
+        current_config = self.config_list.pop(current_index)
+        options = list(self.datasource_combo['values'])
+        options.remove(current_config.name)
+        self.datasource_combo['values'] = options
+        new_index = len(options) - 1
+        self.datasource_combo.current(new_index)
+
+        # 更新活动索引
+        self.active_config_index = new_index
+        self._update_all_info_from_cfg(self.config_list[new_index])
 
     def _load_last_config(self):
         if not self.config_list:
             self._add_new_config()
         else:
-            index = self.datasource_combo.current()
-            datasource_config = self.config_list[index]
+            self.active_config_index = self.datasource_combo.current()
+            if self.active_config_index == -1 and self.config_list:
+                self.active_config_index = 0  # 默认指向第一个
+                self.datasource_combo.current(0)
+            datasource_config = self.config_list[self.active_config_index]
             self._update_all_info_from_cfg(datasource_config)
 
     def _update_db_info_from_cfg(self, datasource_config):
@@ -535,7 +593,7 @@ class App(tk.Tk):
 
     def try_connect_db(self):
         try:
-            config_index = self.datasource_combo.current()
+            config_index = self.active_config_index
             if config_index == -1:
                 messagebox.showerror("错误", "请先选择一个配置")
                 return
@@ -575,7 +633,7 @@ class App(tk.Tk):
     def save_file(self):
         try:
             rs = []
-            current_config_index = self.datasource_combo.current()
+            current_config_index = self.active_config_index
             if current_config_index != -1:
                 current_config = self.config_list[current_config_index]
                 self._update_all_cfg_from_info(current_config)
@@ -594,7 +652,7 @@ class App(tk.Tk):
 
     def generate(self):
         try:
-            current_config_index = self.datasource_combo.current()
+            current_config_index = self.active_config_index
             if current_config_index == -1:
                 messagebox.showerror("错误", "请先选择一个配置")
                 return
