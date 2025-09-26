@@ -560,7 +560,7 @@ class App(tk.Tk):
         self._update_all_info_from_cfg(new_cfg)
 
     def _delete_config(self):
-        if len(self.config_list) == 0:
+        if len(self.config_list) == 1:
             return
         current_index = self.active_config_index
         current_config = self.config_list.pop(current_index)
